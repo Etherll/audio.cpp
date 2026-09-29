@@ -36,7 +36,7 @@ env:
   GH_TOKEN: ${{ github.token }}
   BUILD_TARGETS: audiocpp_cli audiocpp_server audiocpp_gguf
   VULKAN_VERSION: '1.4.357.0'
-  CMAKE_ARGS: "-DAUDIOCPP_DEPLOYMENT_BUILD=ON -DAUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=ON -DENGINE_ENABLE_LLAMAFILE=ON -DENGINE_ENABLE_CUDA_GRAPHS=ON"
+  CMAKE_ARGS: "-DAUDIOCPP_STATIC_ESPEAK=ON -DAUDIOCPP_DEPLOYMENT_BUILD=ON -DAUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=ON -DENGINE_ENABLE_LLAMAFILE=ON -DENGINE_ENABLE_CUDA_GRAPHS=ON"
 
 # note: run this workflow one at a time for better cache reuse
 concurrency:
@@ -278,6 +278,7 @@ jobs:
             -DAUDIOCPP_DEPLOYMENT_BUILD=ON \
             -DAUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=ON \
             -DAUDIOCPP_USE_SYSTEM_OPENSSL=ON \
+            -DAUDIOCPP_STATIC_ESPEAK=ON \
             -DENGINE_ENABLE_LLAMAFILE=ON \
             -DENGINE_ENABLE_CUDA_GRAPHS=ON
       - name: Build server
@@ -302,6 +303,8 @@ jobs:
         run: |
           mkdir -p dist/models
           install -m 0755 build/colab-cuda/bin/audiocpp_server dist/audiocpp_server
+          install -m 0644 build/colab-cuda/bin/espeak-ng-data.bin dist/espeak-ng-data.bin
+          cp -r build/colab-cuda/bin/licenses dist/licenses
           install -m 0644 LICENSE dist/LICENSE
           cp -r tools dist/tools
           cp -r model_specs dist/model_specs
@@ -309,6 +312,76 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: audio-${{ needs.get-version.outputs.tag }}-bin-ubuntu-x64-cuda12.8-colab
+          path: dist/*
+
+  # Unsloth Studio: a Linux CUDA bundle for current GPUs. The Colab job above targets sm_75 only
+  # (upstream #733); this one carries SASS for Ampere through Blackwell plus sm_75 PTX, so any
+  # driver-supported card runs without JIT-compiling the whole kernel set on first use.
+  linux-cuda:
+    name: Ubuntu x64 (CUDA 12.8, multi-arch)
+    needs: [check-release, get-version]
+    if: ${{ needs.check-release.outputs.should_release == 'true' }}
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 350
+    container: nvidia/cuda:12.8.1-devel-ubuntu22.04
+    env:
+      CC: gcc-13
+      CXX: g++-13
+      CUDAHOSTCXX: g++-13
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install dependencies
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq software-properties-common
+          add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gcc-13 g++-13 cmake ninja-build libssl-dev
+      - name: Configure
+        run: |
+          cmake -S . -B build/linux-cuda -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            "-DCMAKE_CUDA_ARCHITECTURES=75-virtual;80;86;89;90;100;120" \
+            -DCMAKE_EXE_LINKER_FLAGS='-static-libstdc++ -static-libgcc' \
+            -DENGINE_ENABLE_CUDA=ON \
+            -DENGINE_ENABLE_VULKAN=OFF \
+            -DENGINE_ENABLE_NATIVE_CPU=OFF \
+            -DENGINE_BUILD_TESTS=OFF \
+            -DAUDIOCPP_VERSION=${{ needs.get-version.outputs.version }} \
+            -DAUDIOCPP_DEPLOYMENT_BUILD=ON \
+            -DAUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=ON \
+            -DAUDIOCPP_USE_SYSTEM_OPENSSL=ON \
+            -DAUDIOCPP_STATIC_ESPEAK=ON \
+            -DENGINE_ENABLE_LLAMAFILE=ON \
+            -DENGINE_ENABLE_CUDA_GRAPHS=ON
+      - name: Build server
+        run: cmake --build build/linux-cuda --parallel "$(nproc)" --target audiocpp_server
+      - name: Verify portable executable
+        run: |
+          ldd build/linux-cuda/bin/audiocpp_server | tee /tmp/audiocpp_server.ldd
+          if awk '/libcuda\.so\.1/ && /not found/ { next } /not found/ { print; bad=1 } END { exit bad ? 1 : 0 }' /tmp/audiocpp_server.ldd > /tmp/audiocpp_server.bad; then
+            true
+          else
+            echo "::error::The CUDA executable has missing runtime dependencies."
+            cat /tmp/audiocpp_server.bad
+            exit 1
+          fi
+      - name: Stage bundle
+        run: |
+          mkdir -p dist/models
+          install -m 0755 build/linux-cuda/bin/audiocpp_server dist/audiocpp_server
+          install -m 0644 build/linux-cuda/bin/espeak-ng-data.bin dist/espeak-ng-data.bin
+          cp -r build/linux-cuda/bin/licenses dist/licenses
+          install -m 0644 LICENSE dist/LICENSE
+          cp -r tools dist/tools
+          cp -r model_specs dist/model_specs
+          sha256sum dist/audiocpp_server > dist/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audio-${{ needs.get-version.outputs.tag }}-bin-ubuntu-x64-cuda12.8
           path: dist/*
 
   windows-cpu:
@@ -323,9 +396,9 @@ jobs:
       - name: Build
         shell: pwsh
         run: |
-          .\scripts\build_windows.ps1 -Preset windows-cpu-release -Target audiocpp_cli -DeploymentBuild -NativeModelManager -Version ${{ needs.get-version.outputs.version }}
-          .\scripts\build_windows.ps1 -Preset windows-cpu-release -Target audiocpp_server -DeploymentBuild -NativeModelManager -Version ${{ needs.get-version.outputs.version }}
-          .\scripts\build_windows.ps1 -Preset windows-cpu-release -Target audiocpp_gguf -DeploymentBuild -NativeModelManager -Version ${{ needs.get-version.outputs.version }}
+          .\scripts\build_windows.ps1 -Preset windows-cpu-release -Target audiocpp_cli -DeploymentBuild -NativeModelManager -StaticEspeak -Version ${{ needs.get-version.outputs.version }}
+          .\scripts\build_windows.ps1 -Preset windows-cpu-release -Target audiocpp_server -DeploymentBuild -NativeModelManager -StaticEspeak -Version ${{ needs.get-version.outputs.version }}
+          .\scripts\build_windows.ps1 -Preset windows-cpu-release -Target audiocpp_gguf -DeploymentBuild -NativeModelManager -StaticEspeak -Version ${{ needs.get-version.outputs.version }}
       - name: Bundle VC runtime
         shell: pwsh
         working-directory: build/windows-cpu-release/bin
@@ -372,9 +445,9 @@ jobs:
       - name: Build
         shell: pwsh
         run: |
-          .\scripts\build_windows.ps1 -Preset windows-cpu-release -Target audiocpp_cli -DeploymentBuild -NativeModelManager -CpuArch baseline -Llamafile OFF -Version ${{ needs.get-version.outputs.version }}
-          .\scripts\build_windows.ps1 -Preset windows-cpu-release -Target audiocpp_server -DeploymentBuild -NativeModelManager -CpuArch baseline -Llamafile OFF -Version ${{ needs.get-version.outputs.version }}
-          .\scripts\build_windows.ps1 -Preset windows-cpu-release -Target audiocpp_gguf -DeploymentBuild -NativeModelManager -CpuArch baseline -Llamafile OFF -Version ${{ needs.get-version.outputs.version }}
+          .\scripts\build_windows.ps1 -Preset windows-cpu-release -Target audiocpp_cli -DeploymentBuild -NativeModelManager -StaticEspeak -CpuArch baseline -Llamafile OFF -Version ${{ needs.get-version.outputs.version }}
+          .\scripts\build_windows.ps1 -Preset windows-cpu-release -Target audiocpp_server -DeploymentBuild -NativeModelManager -StaticEspeak -CpuArch baseline -Llamafile OFF -Version ${{ needs.get-version.outputs.version }}
+          .\scripts\build_windows.ps1 -Preset windows-cpu-release -Target audiocpp_gguf -DeploymentBuild -NativeModelManager -StaticEspeak -CpuArch baseline -Llamafile OFF -Version ${{ needs.get-version.outputs.version }}
       - name: Bundle VC runtime
         shell: pwsh
         working-directory: build/windows-cpu-release/bin
@@ -428,9 +501,9 @@ jobs:
       - name: Build
         shell: pwsh
         run: |
-          .\scripts\build_windows.ps1 -Preset windows-vulkan-release -Target audiocpp_cli -DeploymentBuild -NativeModelManager -Version ${{ needs.get-version.outputs.version }}
-          .\scripts\build_windows.ps1 -Preset windows-vulkan-release -Target audiocpp_server -DeploymentBuild -NativeModelManager -Version ${{ needs.get-version.outputs.version }}
-          .\scripts\build_windows.ps1 -Preset windows-vulkan-release -Target audiocpp_gguf -DeploymentBuild -NativeModelManager -Version ${{ needs.get-version.outputs.version }}
+          .\scripts\build_windows.ps1 -Preset windows-vulkan-release -Target audiocpp_cli -DeploymentBuild -NativeModelManager -StaticEspeak -Version ${{ needs.get-version.outputs.version }}
+          .\scripts\build_windows.ps1 -Preset windows-vulkan-release -Target audiocpp_server -DeploymentBuild -NativeModelManager -StaticEspeak -Version ${{ needs.get-version.outputs.version }}
+          .\scripts\build_windows.ps1 -Preset windows-vulkan-release -Target audiocpp_gguf -DeploymentBuild -NativeModelManager -StaticEspeak -Version ${{ needs.get-version.outputs.version }}
       - name: Bundle VC runtime
         shell: pwsh
         working-directory: build/windows-vulkan-release/bin
@@ -513,7 +586,7 @@ jobs:
             -DENGINE_ENABLE_CPU_ALL_VARIANTS=ON ^
             "-DCMAKE_CUDA_ARCHITECTURES=${{ matrix.cuda_archs }}" ^
             -DAUDIOCPP_VERSION=${{ needs.get-version.outputs.version }} ^
-            -DAUDIOCPP_DEPLOYMENT_BUILD=ON -DAUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=ON -DCUDAToolkit_ROOT="%CUDA_PATH%"
+            -DAUDIOCPP_STATIC_ESPEAK=ON -DAUDIOCPP_DEPLOYMENT_BUILD=ON -DAUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=ON -DCUDAToolkit_ROOT="%CUDA_PATH%"
           cmake --build build --config Release -j %NUMBER_OF_PROCESSORS% --target ${{ env.BUILD_TARGETS }}
       - name: Bundle CUDA runtime
         shell: pwsh
@@ -597,6 +670,7 @@ jobs:
       - windows-vulkan
       - windows-cuda
       - linux-cuda-colab
+      - linux-cuda
     if: >-
       ${{
         always() &&
