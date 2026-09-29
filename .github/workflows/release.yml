@@ -322,7 +322,6 @@ jobs:
     needs: [check-release, get-version]
     if: ${{ needs.check-release.outputs.should_release == 'true' }}
     runs-on: ubuntu-latest
-    continue-on-error: true
     timeout-minutes: 350
     container: nvidia/cuda:12.8.1-devel-ubuntu22.04
     env:
@@ -350,6 +349,7 @@ jobs:
             -DENGINE_ENABLE_VULKAN=OFF \
             -DENGINE_ENABLE_NATIVE_CPU=OFF \
             -DENGINE_BUILD_TESTS=OFF \
+            "-DCMAKE_BUILD_RPATH=\$ORIGIN" \
             -DAUDIOCPP_VERSION=${{ needs.get-version.outputs.version }} \
             -DAUDIOCPP_DEPLOYMENT_BUILD=ON \
             -DAUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=ON \
@@ -374,6 +374,11 @@ jobs:
           mkdir -p dist/models
           install -m 0755 build/linux-cuda/bin/audiocpp_server dist/audiocpp_server
           install -m 0644 build/linux-cuda/bin/espeak-ng-data.bin dist/espeak-ng-data.bin
+          # The CUDA runtime the server links, beside it (RUNPATH $ORIGIN): a host with only the driver
+          # installed, or a torch on another CUDA line, must still start it.
+          for lib in libcudart.so.12 libcublas.so.12 libcublasLt.so.12 libcufft.so.11; do
+            cp -L /usr/local/cuda/lib64/$lib dist/$lib
+          done
           cp -r build/linux-cuda/bin/licenses dist/licenses
           install -m 0644 LICENSE dist/LICENSE
           cp -r tools dist/tools
@@ -685,7 +690,8 @@ jobs:
         needs.windows-cpu.result == 'success' &&
         needs.windows-cpu-portable.result == 'success' &&
         needs.windows-vulkan.result == 'success' &&
-        needs.windows-cuda.result == 'success'
+        needs.windows-cuda.result == 'success' &&
+        needs.linux-cuda.result == 'success'
       }}
     runs-on: ubuntu-latest
     permissions:
