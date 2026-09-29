@@ -15,6 +15,7 @@ param(
     [string]$Llamafile = $null,
     [switch]$DeploymentBuild,
     [switch]$NativeModelManager,
+    [switch]$StaticEspeak,
     [switch]$SystemOpenSsl,
     [string]$BoringSslArchive = "",
     [ValidateSet("full", "core", "custom")]
@@ -554,6 +555,7 @@ Write-Host "Native CPU optimization: $($settings.Native)"
 Write-Host "llamafile SGEMM: $($settings.Llamafile)"
 $deploymentBuildValue = if ($DeploymentBuild) { "ON" } else { "OFF" }
 $nativeModelManagerValue = if ($NativeModelManager) { "ON" } else { "OFF" }
+$staticEspeakValue = if ($StaticEspeak) { "ON" } else { "OFF" }
 $systemOpenSslValue = if ($SystemOpenSsl) { "ON" } else { "OFF" }
 Write-Host "Deployment build: $deploymentBuildValue"
 Write-Host "Native model manager: $nativeModelManagerValue"
@@ -605,6 +607,7 @@ $configureArgs = @(
     "-DENGINE_BUILD_TESTS=$($settings.BuildTests)",
     "-DAUDIOCPP_DEPLOYMENT_BUILD=$deploymentBuildValue",
     "-DAUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=$nativeModelManagerValue",
+    "-DAUDIOCPP_STATIC_ESPEAK=$staticEspeakValue",
     "-DAUDIOCPP_USE_SYSTEM_OPENSSL=$systemOpenSslValue",
     "-DAUDIOCPP_VERSION=$Version",
     "-U", "AUDIOCPP_BORINGSSL_ARCHIVE",
